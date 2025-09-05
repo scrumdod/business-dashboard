@@ -37,6 +37,8 @@ function App() {
   const [widgets, setWidgets] = useState<WidgetData[]>(defaultWidgets);
   const [columnCount, setColumnCount] = useState<ColumnCount>(4);
   const [manualColumnOverride, setManualColumnOverride] = useState<ColumnCount | null>(null);
+  const [overrideDefaults, setOverrideDefaults] = useState<boolean>(false);
+  const [syncNotification, setSyncNotification] = useState<string>('');
 
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -58,9 +60,29 @@ function App() {
       const layouts: LayoutStorage = existingLayouts ? JSON.parse(existingLayouts) : {};
       layouts[columns] = widgetList;
       localStorage.setItem('dashboard-layouts', JSON.stringify(layouts));
+      
+      // Also track that this layout is now "saved" (not default)
+      const savedStatus = localStorage.getItem('dashboard-saved-status');
+      const savedLayouts: {[key: number]: boolean} = savedStatus ? JSON.parse(savedStatus) : {};
+      savedLayouts[columns] = true;
+      localStorage.setItem('dashboard-saved-status', JSON.stringify(savedLayouts));
     } catch (error) {
       console.error('Error saving layout:', error);
     }
+  };
+
+  // Check if a layout has been saved (vs using defaults)
+  const isLayoutSaved = (columns: ColumnCount): boolean => {
+    try {
+      const savedStatus = localStorage.getItem('dashboard-saved-status');
+      if (savedStatus) {
+        const savedLayouts: {[key: number]: boolean} = JSON.parse(savedStatus);
+        return savedLayouts[columns] || false;
+      }
+    } catch (error) {
+      console.error('Error checking saved status:', error);
+    }
+    return false;
   };
 
   // Load layout for specific column count
@@ -154,12 +176,61 @@ function App() {
     const updatedWidgets = [...widgets, newWidget];
     setWidgets(updatedWidgets);
     saveLayoutForColumns(updatedWidgets, columnCount);
+
+    // Add the same widget to ALL other saved layouts
+    try {
+      const existingLayouts = localStorage.getItem('dashboard-layouts');
+      if (existingLayouts) {
+        const layouts: LayoutStorage = JSON.parse(existingLayouts);
+        let updatedCount = 0;
+
+        ([1, 2, 3, 4] as ColumnCount[]).forEach(cols => {
+          if (cols !== columnCount && layouts[cols]) {
+            layouts[cols] = [...layouts[cols], newWidget];
+            updatedCount++;
+          }
+        });
+
+        if (updatedCount > 0) {
+          localStorage.setItem('dashboard-layouts', JSON.stringify(layouts));
+          showSyncNotification(`Added widget to ${updatedCount} other layout${updatedCount > 1 ? 's' : ''}`);
+        }
+      }
+    } catch (error) {
+      console.error('Error adding widget to other layouts:', error);
+    }
   };
 
   const removeWidget = (id: string) => {
     const updatedWidgets = widgets.filter(widget => widget.id !== id);
     setWidgets(updatedWidgets);
     saveLayoutForColumns(updatedWidgets, columnCount);
+
+    // Remove the same widget from ALL other saved layouts
+    try {
+      const existingLayouts = localStorage.getItem('dashboard-layouts');
+      if (existingLayouts) {
+        const layouts: LayoutStorage = JSON.parse(existingLayouts);
+        let updatedCount = 0;
+
+        ([1, 2, 3, 4] as ColumnCount[]).forEach(cols => {
+          if (cols !== columnCount && layouts[cols]) {
+            const originalLength = layouts[cols].length;
+            layouts[cols] = layouts[cols].filter(widget => widget.id !== id);
+            if (layouts[cols].length !== originalLength) {
+              updatedCount++;
+            }
+          }
+        });
+
+        if (updatedCount > 0) {
+          localStorage.setItem('dashboard-layouts', JSON.stringify(layouts));
+          showSyncNotification(`Removed widget from ${updatedCount} other layout${updatedCount > 1 ? 's' : ''}`);
+        }
+      }
+    } catch (error) {
+      console.error('Error removing widget from other layouts:', error);
+    }
   };
 
   const resetLayout = () => {
@@ -194,6 +265,48 @@ function App() {
     setWidgets(newLayout);
   };
 
+  // Show sync notification
+  const showSyncNotification = (message: string) => {
+    setSyncNotification(message);
+    setTimeout(() => setSyncNotification(''), 3000); // Clear after 3 seconds
+  };
+
+  // Save layout with override defaults logic
+  const saveLayoutWithOverride = () => {
+    if (!overrideDefaults) {
+      // Just save current layout normally
+      saveLayoutForColumns(widgets, columnCount);
+      showSyncNotification('Layout saved');
+      return;
+    }
+
+    // Override defaults: sync current sequence to unsaved layouts
+    const currentSequence = widgets;
+    let syncedCount = 0;
+
+    try {
+      ([1, 2, 3, 4] as ColumnCount[]).forEach(cols => {
+        if (cols !== columnCount && !isLayoutSaved(cols)) {
+          // This layout is still using defaults, so override it
+          saveLayoutForColumns(currentSequence, cols);
+          syncedCount++;
+        }
+      });
+
+      // Always save the current layout too
+      saveLayoutForColumns(currentSequence, columnCount);
+
+      if (syncedCount > 0) {
+        showSyncNotification(`Saved layout and synced to ${syncedCount} default layout${syncedCount > 1 ? 's' : ''}`);
+      } else {
+        showSyncNotification('Layout saved (no defaults to sync)');
+      }
+    } catch (error) {
+      console.error('Error syncing layouts:', error);
+      showSyncNotification('Error saving layout');
+    }
+  };
+
   const clearAllLayouts = () => {
     // Clear everything completely
     localStorage.clear(); // Clear ALL localStorage, not just dashboard-layouts
@@ -205,8 +318,9 @@ function App() {
     const freshWidgets = defaultWidgets.map(widget => ({ ...widget }));
     setWidgets(freshWidgets);
     
-    // Reset column state
+    // Reset column state and override toggle
     setManualColumnOverride(null);
+    setOverrideDefaults(false);
     const autoColumns = detectColumnCount();
     setColumnCount(autoColumns);
   };
@@ -289,6 +403,25 @@ function App() {
   
   return (
     <div className="app">
+      {syncNotification && (
+        <div style={{
+          position: 'fixed',
+          bottom: '160px',
+          right: '20px',
+          background: 'rgba(34, 197, 94, 0.9)',
+          color: 'white',
+          padding: '10px 15px',
+          borderRadius: '6px',
+          fontSize: '12px',
+          fontWeight: '500',
+          zIndex: 1000,
+          backdropFilter: 'blur(10px)',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)'
+        }}>
+          ✅ {syncNotification}
+        </div>
+      )}
+
       <div className="dashboard-controls">
         <div className="controls-row">
           <button className="control-btn add" onClick={addWidget}>
@@ -300,16 +433,39 @@ function App() {
           <button className="control-btn" onClick={clearAllLayouts}>
             Clear All
           </button>
-          <button className="control-btn" onClick={() => {
-            console.log('=== DEBUG INFO ===');
-            console.log('widgets array:', widgets);
-            console.log('widgets.length:', widgets.length);
-            console.log('widget numbers:', widgets.map(w => w.number));
-            console.log('defaultWidgets:', defaultWidgets);
-            console.log('localStorage content:', localStorage.getItem('dashboard-layouts'));
-          }}>
-            Debug
+          <button 
+            className="control-btn"
+            onClick={saveLayoutWithOverride}
+            style={{
+              background: overrideDefaults ? 'rgba(102, 126, 234, 0.9)' : 'rgba(255, 255, 255, 0.9)',
+              color: overrideDefaults ? 'white' : 'inherit'
+            }}
+          >
+            💾 Save Layout
           </button>
+        </div>
+        
+        <div className="controls-row">
+          <label style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            background: 'rgba(255, 255, 255, 0.9)',
+            padding: '8px 12px',
+            borderRadius: '6px',
+            fontSize: '12px',
+            fontWeight: '500',
+            cursor: 'pointer',
+            backdropFilter: 'blur(10px)'
+          }}>
+            <input
+              type="checkbox"
+              checked={overrideDefaults}
+              onChange={(e) => setOverrideDefaults(e.target.checked)}
+              style={{ accentColor: '#667eea' }}
+            />
+            Override Defaults
+          </label>
         </div>
         
         <div className="controls-row">
